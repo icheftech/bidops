@@ -1,0 +1,531 @@
+// BidOps — Prisma Schema
+// Multi-tenant, pgvector-enabled, RLS-ready
+// All tables include tenantId for row-level isolation
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [pgvector(map: "vector", schema: "extensions"), uuid_ossp(map: "uuid-ossp", schema: "extensions")]
+}
+
+// ─────────────────────────────────────────────────────────────
+// TENANTS
+// ─────────────────────────────────────────────────────────────
+
+model Tenant {
+  id           String       @id @default(dbgenerated("extensions.uuid_generate_v4()")) @db.Uuid
+  name         String
+  slug         String       @unique
+  cageCode     String?      @map("cage_code")
+  uei          String?
+  hubCertified Boolean      @default(false) @map("hub_certified")
+  hubExpiry    DateTime?    @map("hub_expiry")
+  samExpiry    DateTime?    @map("sam_expiry")
+  primaryNaics String[]     @map("primary_naics")
+  status       TenantStatus @default(ONBOARDING)
+  createdAt    DateTime     @default(now()) @map("created_at")
+  updatedAt    DateTime     @updatedAt @map("updated_at")
+
+  // Relations
+  users               User[]
+  opportunities       Opportunity[]
+  bids                Bid[]
+  pricingCatalog      PricingCatalogItem[]
+  pastPerformance     PastPerformance[]
+  marketIntelligence  MarketIntelligence[]
+  subcontractors      Subcontractor[]
+  capabilityStatements CapabilityStatement[]
+  auditLogs           AuditLog[]
+  agentRuns           AgentRun[]
+  hitlCheckpoints     HitlCheckpoint[]
+  sourceCredentials   SourceCredential[]
+
+  @@map("tenants")
+}
+
+enum TenantStatus {
+  ONBOARDING
+  ACTIVE
+  SUSPENDED
+  CHURNED
+
+  @@map("tenant_status")
+}
+
+// ─────────────────────────────────────────────────────────────
+// USERS
+// ─────────────────────────────────────────────────────────────
+
+model User {
+  id        String   @id @default(dbgenerated("extensions.uuid_generate_v4()")) @db.Uuid
+  tenantId  String   @map("tenant_id") @db.Uuid
+  email     String
+  name      String?
+  role      UserRole @default(VIEWER)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  tenant              Tenant           @relation(fields: [tenantId], references: [id])
+  cp1Approvals        HitlCheckpoint[] @relation("CP1Approver")
+  cp2Approvals        HitlCheckpoint[] @relation("CP2Approver")
+
+  @@unique([tenantId, email])
+  @@index([tenantId])
+  @@map("users")
+}
+
+enum UserRole {
+  OWNER
+  BD_MANAGER
+  PROPOSAL_WRITER
+  PRICING_ANALYST
+  ADMIN
+  VIEWER
+
+  @@map("user_role")
+}
+
+// ─────────────────────────────────────────────────────────────
+// OPPORTUNITIES
+// ─────────────────────────────────────────────────────────────
+
+model Opportunity {
+  id                     String            @id @default(dbgenerated("extensions.uuid_generate_v4()")) @db.Uuid
+  tenantId               String            @map("tenant_id") @db.Uuid
+  source                 OpportunitySource
+  sourceId               String            @map("source_id")
+  title                  String
+  description            String?           @db.Text
+  naicsCode              String?           @map("naics_code")
+  pscCode                String?           @map("psc_code")
+  domain                 OpportunityDomain
+  postedDate             DateTime?         @map("posted_date")
+  dueDate                DateTime?         @map("due_date")
+  estimatedValue         Decimal?          @map("estimated_value") @db.Decimal(15, 2)
+  setAsideType           SetAsideType      @default(UNKNOWN) @map("set_aside_type")
+  solicitationNumber     String?           @map("solicitation_number")
+  agency                 String?
+  officeAddress          String?           @map("office_address")
+  rawDocumentUrl         String?           @map("raw_document_url")
+  status                 OpportunityStatus @default(NEW)
+  score                  Int?
+  scoreReasoning         Json?             @map("score_reasoning")
+  hubApplicable          Boolean           @default(false) @map("hub_applicable")
+  catalogCoveragePercent Decimal?          @map("catalog_coverage_percent") @db.Decimal(5, 2)
+  sourceList             String[]          @map("source_list") // for dedup tracking
+  createdAt              DateTime          @default(now()) @map("created_at")
+  updatedAt              DateTime          @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  bids   Bid[]
+
+  @@unique([tenantId, source, sourceId])
+  @@index([tenantId])
+  @@index([tenantId, status])
+  @@index([tenantId, domain])
+  @@index([tenantId, dueDate])
+  @@index([tenantId, score])
+  @@map("opportunities")
+}
+
+enum OpportunitySource {
+  SAM_GOV
+  ESBD_TEXAS
+  CITY_OF_HOUSTON
+  HARRIS_COUNTY
+  METRO_HARRIS
+  HGAC
+  AUSTIN_FINANCE
+  DEMANDSTAR
+  IONWAVE
+  EUNA
+  OPENGOV
+  EMAIL_INBOUND
+  MANUAL
+
+  @@map("opportunity_source")
+}
+
+enum OpportunityDomain {
+  AI_ROBOTICS
+  IT_STAFFING
+  MANAGED_IT
+  PROFESSIONAL_SERVICES
+  LOGISTICS
+  OTHER
+
+  @@map("opportunity_domain")
+}
+
+enum SetAsideType {
+  TOTAL_SMALL_BUSINESS
+  PARTIAL_SMALL_BUSINESS
+  HUB_ZONE
+  SDVOSB
+  WOSB
+  HUB // Texas HUB
+  EIGHT_A
+  NONE
+  UNKNOWN
+
+  @@map("set_aside_type")
+}
+
+enum OpportunityStatus {
+  NEW
+  SCORING
+  SCORED
+  PURSUING
+  PASSED
+  EXPIRED
+
+  @@map("opportunity_status")
+}
+
+// ─────────────────────────────────────────────────────────────
+// BIDS
+// ─────────────────────────────────────────────────────────────
+
+model Bid {
+  id              String    @id @default(dbgenerated("extensions.uuid_generate_v4()")) @db.Uuid
+  tenantId        String    @map("tenant_id") @db.Uuid
+  opportunityId   String    @map("opportunity_id") @db.Uuid
+  domain          String
+  status          BidStatus @default(DRAFT)
+  autoQualified   Boolean   @default(false) @map("auto_qualified")
+  totalPrice      Decimal?  @map("total_price") @db.Decimal(15, 2)
+  cp1ApprovedAt   DateTime? @map("cp1_approved_at")
+  cp1ApproverId   String?   @map("cp1_approver_id") @db.Uuid
+  cp2ApprovedAt   DateTime? @map("cp2_approved_at")
+  cp2ApproverId   String?   @map("cp2_approver_id") @db.Uuid
+  submittedAt     DateTime? @map("submitted_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  tenant      Tenant          @relation(fields: [tenantId], references: [id])
+  opportunity Opportunity     @relation(fields: [opportunityId], references: [id])
+  documents   BidDocument[]
+  checkpoints HitlCheckpoint[]
+  agentRuns   AgentRun[]
+
+  @@index([tenantId])
+  @@index([tenantId, status])
+  @@map("bids")
+}
+
+enum BidStatus {
+  DRAFT
+  CP1_PENDING
+  CP1_APPROVED
+  CP1_REJECTED
+  PREPARING
+  CP2_PENDING
+  CP2_APPROVED
+  CP2_REJECTED
+  SUBMITTED
+  AWARDED
+  LOST
+  WITHDRAWN
+
+  @@map("bid_status")
+}
+
+model BidDocument {
+  id             String      @id @default(dbgenerated("extensions.uuid_generate_v4()")) @db.Uuid
+  tenantId       String      @map("tenant_id") @db.Uuid
+  bidId          String      @map("bid_id") @db.Uuid
+  docType        BidDocType  @map("doc_type")
+  storageKey     String      @map("storage_key")
+  fileName       String?     @map("file_name")
+  version        Int         @default(1)
+  createdByAgent String?     @map("created_by_agent")
+  createdAt      DateTime    @default(now()) @map("created_at")
+
+  bid Bid @relation(fields: [bidId], references: [id])
+
+  @@index([tenantId, bidId])
+  @@map("bid_documents")
+}
+
+enum BidDocType {
+  TECHNICAL_NARRATIVE
+  PRICING_EXHIBIT
+  CAPABILITY_STATEMENT
+  PAST_PERFORMANCE
+  GOVERNMENT_FORMS
+  COVER_LETTER
+  MANAGEMENT_APPROACH
+  OTHER
+
+  @@map("bid_doc_type")
+}
+
+// ─────────────────────────────────────────────────────────────
+// HITL CHECKPOINTS
+// ─────────────────────────────────────────────────────────────
+
+model HitlCheckpoint {
+  id               String           @id @default(dbgenerated("extensions.uuid_generate_v4()")) @db.Uuid
+  tenantId         String           @map("tenant_id") @db.Uuid
+  bidId            String           @map("bid_id") @db.Uuid
+  checkpointType   CheckpointType   @map("checkpoint_type")
+  status           CheckpointStatus @default(PENDING)
+  briefingPayload  Json             @map("briefing_payload")
+  reviewerId       String?          @map("reviewer_id") @db.Uuid
+  decisionAt       DateTime?        @map("decision_at")
+  notes            String?          @db.Text
+  createdAt        DateTime         @default(now()) @map("created_at")
+
+  tenant   Tenant  @relation(fields: [tenantId], references: [id])
+  bid      Bid     @relation(fields: [bidId], references: [id])
+  cp1User  User?   @relation("CP1Approver", fields: [reviewerId], references: [id])
+  cp2User  User?   @relation("CP2Approver", fields: [reviewerId], references: [id])
+
+  @@index([tenantId, bidId])
+  @@index([tenantId, status])
+  @@map("hitl_checkpoints")
+}
+
+enum CheckpointType {
+  CP1
+  CP2
+
+  @@map("checkpoint_type")
+}
+
+enum CheckpointStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  BYPASSED
+
+  @@map("checkpoint_status")
+}
+
+// ─────────────────────────────────────────────────────────────
+// PRICING CATALOG
+// ─────────────────────────────────────────────────────────────
+
+model PricingCatalogItem {
+  id            String   @id @default(dbgenerated("extensions.uuid_generate_v4()")) @db.Uuid
+  tenantId      String   @map("tenant_id") @db.Uuid
+  naicsCode     String?  @map("naics_code")
+  domain        String
+  lineItemCode  String   @map("line_item_code")
+  description   String
+  unit          String   // hour, day, month, each, etc.
+  unitPrice     Decimal  @map("unit_price") @db.Decimal(10, 2)
+  effectiveDate DateTime @map("effective_date")
+  isActive      Boolean  @default(true) @map("is_active")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@unique([tenantId, lineItemCode])
+  @@index([tenantId])
+  @@index([tenantId, domain])
+  @@map("pricing_catalog")
+}
+
+// ─────────────────────────────────────────────────────────────
+// PAST PERFORMANCE
+// ─────────────────────────────────────────────────────────────
+
+model PastPerformance {
+  id             String   @id @default(dbgenerated("extensions.uuid_generate_v4()")) @db.Uuid
+  tenantId       String   @map("tenant_id") @db.Uuid
+  contractNumber String?  @map("contract_number")
+  client         String
+  agencyType     String?  @map("agency_type") // federal, state, local, commercial
+  naicsCode      String?  @map("naics_code")
+  domain         String
+  scopeSummary   String   @map("scope_summary") @db.Text
+  dollarValue    Decimal? @map("dollar_value") @db.Decimal(15, 2)
+  startDate      DateTime? @map("start_date")
+  endDate        DateTime? @map("end_date")
+  outcome        String?  // awarded, completed, lost, ongoing
+  notes          String?  @db.Text
+  embedding      Unsupported("vector(1536)")?
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId])
+  @@index([tenantId, domain])
+  @@map("past_performance")
+}
+
+// ─────────────────────────────────────────────────────────────
+// MARKET INTELLIGENCE
+// ─────────────────────────────────────────────────────────────
+
+model MarketIntelligence {
+  id           String   @id @default(dbgenerated("extensions.uuid_generate_v4()")) @db.Uuid
+  tenantId     String   @map("tenant_id") @db.Uuid
+  type         String   // studied_bid, competitive_loss, relationship, market_note
+  title        String
+  agency       String?
+  naicsCode    String?  @map("naics_code")
+  notes        String   @db.Text
+  dateObserved DateTime @map("date_observed")
+  metadata     Json?    // flexible: competitor names, loss reason, contact info, etc.
+  embedding    Unsupported("vector(1536)")?
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId])
+  @@index([tenantId, type])
+  @@map("market_intelligence")
+}
+
+// ─────────────────────────────────────────────────────────────
+// SUBCONTRACTORS
+// ─────────────────────────────────────────────────────────────
+
+model Subcontractor {
+  id                 String              @id @default(dbgenerated("extensions.uuid_generate_v4()")) @db.Uuid
+  tenantId           String              @map("tenant_id") @db.Uuid
+  companyName        String              @map("company_name")
+  contactName        String?             @map("contact_name")
+  email              String?
+  phone              String?
+  naicsCodes         String[]            @map("naics_codes")
+  certifications     String[]            // HUB, 8a, WOSB, SBE, etc.
+  domains            String[]
+  hourlyRate         Decimal?            @map("hourly_rate") @db.Decimal(8, 2)
+  dayRate            Decimal?            @map("day_rate") @db.Decimal(8, 2)
+  availabilityStatus SubAvailability     @default(UNKNOWN) @map("availability_status")
+  notes              String?             @db.Text
+  createdAt          DateTime            @default(now()) @map("created_at")
+  updatedAt          DateTime            @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId])
+  @@map("subcontractors")
+}
+
+enum SubAvailability {
+  AVAILABLE
+  PARTIALLY_AVAILABLE
+  UNAVAILABLE
+  UNKNOWN
+
+  @@map("sub_availability")
+}
+
+// ─────────────────────────────────────────────────────────────
+// CAPABILITY STATEMENTS
+// ─────────────────────────────────────────────────────────────
+
+model CapabilityStatement {
+  id        String   @id @default(dbgenerated("extensions.uuid_generate_v4()")) @db.Uuid
+  tenantId  String   @map("tenant_id") @db.Uuid
+  domain    String
+  title     String
+  content   String   @db.Text
+  version   Int      @default(1)
+  isActive  Boolean  @default(true) @map("is_active")
+  embedding Unsupported("vector(1536)")?
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId, domain])
+  @@map("capability_statements")
+}
+
+// ─────────────────────────────────────────────────────────────
+// SOURCE CREDENTIALS (encrypted at app layer before storage)
+// ─────────────────────────────────────────────────────────────
+
+model SourceCredential {
+  id           String            @id @default(dbgenerated("extensions.uuid_generate_v4()")) @db.Uuid
+  tenantId     String            @map("tenant_id") @db.Uuid
+  source       OpportunitySource
+  encryptedUsername String?      @map("encrypted_username")
+  encryptedPassword String?      @map("encrypted_password")
+  encryptedApiKey   String?      @map("encrypted_api_key")
+  isActive     Boolean           @default(true) @map("is_active")
+  lastVerified DateTime?         @map("last_verified")
+  createdAt    DateTime          @default(now()) @map("created_at")
+  updatedAt    DateTime          @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@unique([tenantId, source])
+  @@index([tenantId])
+  @@map("source_credentials")
+}
+
+// ─────────────────────────────────────────────────────────────
+// AGENT RUNS
+// ─────────────────────────────────────────────────────────────
+
+model AgentRun {
+  id             String         @id @default(dbgenerated("extensions.uuid_generate_v4()")) @db.Uuid
+  tenantId       String         @map("tenant_id") @db.Uuid
+  bidId          String?        @map("bid_id") @db.Uuid
+  opportunityId  String?        @map("opportunity_id") @db.Uuid
+  agentType      String         @map("agent_type")
+  status         AgentRunStatus @default(QUEUED)
+  inputPayload   Json           @map("input_payload")
+  outputPayload  Json?          @map("output_payload")
+  llmCalls       Int            @default(0) @map("llm_calls")
+  tokensUsed     Int            @default(0) @map("tokens_used")
+  costUsd        Decimal        @default(0) @map("cost_usd") @db.Decimal(8, 6)
+  startedAt      DateTime       @default(now()) @map("started_at")
+  completedAt    DateTime?      @map("completed_at")
+  error          String?        @db.Text
+
+  tenant Tenant  @relation(fields: [tenantId], references: [id])
+  bid    Bid?    @relation(fields: [bidId], references: [id])
+
+  @@index([tenantId])
+  @@index([tenantId, agentType])
+  @@index([tenantId, status])
+  @@map("agent_runs")
+}
+
+enum AgentRunStatus {
+  QUEUED
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
+
+  @@map("agent_run_status")
+}
+
+// ─────────────────────────────────────────────────────────────
+// AUDIT LOG (append-only)
+// ─────────────────────────────────────────────────────────────
+
+model AuditLog {
+  id         String    @id @default(dbgenerated("extensions.uuid_generate_v4()")) @db.Uuid
+  tenantId   String    @map("tenant_id") @db.Uuid
+  entityType String    @map("entity_type") // opportunity, bid, agent_run, etc.
+  entityId   String    @map("entity_id") @db.Uuid
+  agentId    String?   @map("agent_id")
+  action     String
+  payload    Json
+  actorType  String    @map("actor_type") // agent | human | system
+  actorId    String?   @map("actor_id")
+  timestamp  DateTime  @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId, entityType, entityId])
+  @@index([tenantId, timestamp])
+  @@map("audit_log")
+}
