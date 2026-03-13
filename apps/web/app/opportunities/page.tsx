@@ -1,70 +1,65 @@
-import { auth } from "@/auth";
-import { redirect } from "next/navigation";
-import { prisma } from "@/lib/prisma";
-import { DashboardShell } from "@/components/dashboard/DashboardShell";
-import { OpportunityFilters } from "@/components/opportunities/OpportunityFilters";
-import { OpportunityTable } from "@/components/opportunities/OpportunityTable";
+import { requireSession } from '@/lib/auth'
+import { db } from '@bidops/db'
+import Topbar from '@/components/layout/Topbar'
+import Sidebar from '@/components/layout/Sidebar'
+import OpportunitiesClient from '@/components/opportunities/OpportunitiesClient'
+import type { Opportunity } from '@bidops/types'
 
-interface PageProps {
-  searchParams: {
-    domain?: string;
-    status?: string;
-    source?: string;
-    hub?: string;
-    q?: string;
-    page?: string;
-  };
-}
+export const dynamic = 'force-dynamic'
 
-export default async function OpportunitiesPage({ searchParams }: PageProps) {
-  const session = await auth();
-  if (!session) redirect("/login");
+export default async function OpportunitiesPage() {
+  const session = await requireSession()
+  const { tenantId } = session.user
 
-  const tenantId = (session.user as any).tenantId as string;
-  const page  = Number(searchParams.page ?? 1);
-  const limit = 25;
+  // Fetch all opportunities for this tenant
+  const raw = await db.opportunity.findMany({
+    where: { tenantId },
+    orderBy: [{ score: 'desc' }, { createdAt: 'desc' }],
+    take: 500,
+  })
 
-  const where: any = { tenantId };
-  if (searchParams.domain) where.domain = searchParams.domain;
-  if (searchParams.status) where.status = searchParams.status;
-  if (searchParams.source) where.source = searchParams.source;
-  if (searchParams.hub === "true") where.hubApplicable = true;
-  if (searchParams.q) {
-    where.OR = [
-      { title: { contains: searchParams.q, mode: "insensitive" } },
-      { issuingAgency: { contains: searchParams.q, mode: "insensitive" } },
-      { solicitationNumber: { contains: searchParams.q, mode: "insensitive" } },
-    ];
+  // Sidebar counts
+  const counts = {
+    all:          raw.length,
+    pursuing:     raw.filter(o => o.status === 'PURSUING').length,
+    scored:       raw.filter(o => o.status === 'SCORED').length,
+    newCount:     raw.filter(o => o.status === 'NEW').length,
+    passed:       raw.filter(o => o.status === 'PASSED').length,
+    aiRobotics:   raw.filter(o => o.domain === 'AI_ROBOTICS').length,
+    itStaffing:   raw.filter(o => o.domain === 'IT_STAFFING').length,
+    managedIt:    raw.filter(o => o.domain === 'MANAGED_IT').length,
+    profServices: raw.filter(o => o.domain === 'PROFESSIONAL_SERVICES').length,
+    logistics:    raw.filter(o => o.domain === 'LOGISTICS').length,
+    samGov:       raw.filter(o => o.source === 'SAM_GOV').length,
+    esbd:         raw.filter(o => o.source === 'ESBD_TEXAS').length,
+    cityHouston:  raw.filter(o => o.source === 'CITY_OF_HOUSTON').length,
+    harrisCounty: raw.filter(o => o.source === 'HARRIS_COUNTY').length,
+    demandStar:   raw.filter(o => o.source === 'DEMANDSTAR').length,
   }
 
-  const [opportunities, total] = await Promise.all([
-    prisma.opportunity.findMany({
-      where,
-      orderBy: [{ score: "desc" }, { responseDeadline: "asc" }],
-      skip: (page - 1) * limit,
-      take: limit,
-    }),
-    prisma.opportunity.count({ where }),
-  ]);
+  // Serialize dates for client component
+  const opportunities = raw.map(o => ({
+    ...o,
+    estimatedValue: o.estimatedValue ? Number(o.estimatedValue) : null,
+    catalogCoveragePercent: o.catalogCoveragePercent ? Number(o.catalogCoveragePercent) : null,
+    postedDate: o.postedDate?.toISOString() ?? null,
+    dueDate:    o.dueDate?.toISOString() ?? null,
+    createdAt:  o.createdAt.toISOString(),
+    updatedAt:  o.updatedAt.toISOString(),
+  })) as unknown as Opportunity[]
 
   return (
-    <DashboardShell user={session.user}>
-      <div className="space-y-6">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-2xl font-bold text-gray-900">Opportunities</h1>
-            <p className="text-gray-500 text-sm mt-1">{total.toLocaleString()} total · sorted by score</p>
-          </div>
+    <div className="app-shell">
+      <Topbar />
+      <div className="body-wrap">
+        <Sidebar counts={counts} />
+        <div className="page-content">
+          <OpportunitiesClient
+            initialOpportunities={opportunities}
+            tenantId={tenantId}
+          />
         </div>
-
-        <OpportunityFilters searchParams={searchParams} />
-        <OpportunityTable
-          opportunities={opportunities}
-          total={total}
-          page={page}
-          limit={limit}
-        />
       </div>
-    </DashboardShell>
-  );
+    </div>
+  )
 }
