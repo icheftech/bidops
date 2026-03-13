@@ -1,0 +1,23 @@
+{
+  "framework": "nextjs",
+  "buildCommand": "cd ../.. && npm run build --workspace=@bidops/web",
+  "installCommand": "cd ../.. && npm install",
+  "outputDirectory": ".next",
+  "regions": ["iad1"],
+  "env": {
+    "DATABASE_URL":        { "type": "secret" },
+    "NEXTAUTH_SECRET":     { "type": "secret" },
+    "NEXTAUTH_URL":        { "type": "plain"  },
+    "SAM_GOV_API_KEY":     { "type": "secret" },
+    "ANTHROPIC_API_KEY":   { "type": "secret" },
+    "REDIS_URL":           { "type": "secret" },
+    "AGENT_API_URL":       { "type": "plain"  },
+    "AGENT_API_SECRET":    { "type": "secret" },
+    "PORTAL_PASSWORD":     { "type": "secret" },
+    "PORTAL_AUTH_TOKEN":   { "type": "secret" },
+    "STORAGE_BUCKET":      { "type": "plain"  },
+    "STORAGE_ENDPOINT":    { "type": "secret" },
+    "STORAGE_ACCESS_KEY":  { "type": "secret" },
+    "STORAGE_SECRET_KEY":  { "type": "secret" }
+  }
+}

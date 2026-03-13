@@ -1,38 +1,39 @@
-import { withAuth } from 'next-auth/middleware'
-import { NextResponse } from 'next/server'
+import { NextRequest, NextResponse } from 'next/server'
 
-export default withAuth(
-  function middleware(req) {
-    const token = req.nextauth.token
-    const { pathname } = req.nextUrl
+// ─── ROUTES THAT NEVER NEED A PASSWORD ───────────────────────
+const PUBLIC = ['/api/auth', '/_next', '/favicon.ico']
 
-    // Redirect to dashboard if already logged in and hitting login page
-    if (pathname === '/login' && token) {
-      return NextResponse.redirect(new URL('/dashboard', req.url))
-    }
+export function middleware(req: NextRequest) {
+  const { pathname } = req.nextUrl
 
-    // Inject tenant context header for API routes
-    if (pathname.startsWith('/api/') && token?.tenantId) {
-      const response = NextResponse.next()
-      response.headers.set('x-tenant-id', token.tenantId as string)
-      return response
-    }
-
+  // Always allow public paths
+  if (PUBLIC.some(p => pathname.startsWith(p))) {
     return NextResponse.next()
-  },
-  {
-    callbacks: {
-      authorized: ({ token, req }) => {
-        const { pathname } = req.nextUrl
-        // Public routes
-        if (pathname === '/login' || pathname.startsWith('/api/auth')) {
-          return true
-        }
-        return !!token
-      },
-    },
   }
-)
+
+  // ── PASSWORD GATE ──────────────────────────────────────────
+  // Check for valid session cookie first
+  const authCookie = req.cookies.get('bidops-auth')
+  if (authCookie?.value === process.env.PORTAL_AUTH_TOKEN) {
+    return NextResponse.next()
+  }
+
+  // If hitting the password page itself, allow through
+  if (pathname === '/auth') {
+    return NextResponse.next()
+  }
+
+  // If it's the auth POST endpoint, allow through
+  if (pathname === '/api/auth/portal') {
+    return NextResponse.next()
+  }
+
+  // Everything else → redirect to password gate
+  const url = req.nextUrl.clone()
+  url.pathname = '/auth'
+  url.searchParams.set('from', pathname)
+  return NextResponse.redirect(url)
+}
 
 export const config = {
   matcher: ['/((?!_next/static|_next/image|favicon.ico).*)'],

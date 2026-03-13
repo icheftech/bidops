@@ -1,66 +1,45 @@
-import { NextAuthOptions, getServerSession } from 'next-auth'
-import CredentialsProvider from 'next-auth/providers/credentials'
-import { db } from '@bidops/db'
+import { cookies } from 'next/headers'
+import { redirect } from 'next/navigation'
 
-export const authOptions: NextAuthOptions = {
-  session: { strategy: 'jwt' },
-  pages: {
-    signIn: '/login',
-  },
-  callbacks: {
-    async jwt({ token, user }) {
-      if (user) {
-        token.userId = user.id
-        token.tenantId = (user as any).tenantId
-        token.tenantSlug = (user as any).tenantSlug
-        token.role = (user as any).role
-      }
-      return token
-    },
-    async session({ session, token }) {
-      session.user.id = token.userId as string
-      session.user.tenantId = token.tenantId as string
-      session.user.tenantSlug = token.tenantSlug as string
-      session.user.role = token.role as string
-      return session
-    },
-  },
-  providers: [
-    CredentialsProvider({
-      name: 'credentials',
-      credentials: {
-        email: { label: 'Email', type: 'email' },
-        password: { label: 'Password', type: 'password' },
-      },
-      async authorize(credentials) {
-        if (!credentials?.email || !credentials?.password) return null
+/**
+ * Password-gate auth — Phase 1
+ * Full per-user NextAuth will be added in Phase 2
+ * when user management and roles are needed.
+ */
 
-        const user = await db.user.findFirst({
-          where: { email: credentials.email },
-          include: { tenant: true },
-        })
-
-        if (!user || user.tenant.status === 'SUSPENDED') return null
-
-        // TODO: Add bcrypt password check once password field is added
-        // For now returns user for scaffold — add auth in Phase 1 completion
-        return {
-          id: user.id,
-          email: user.email,
-          name: user.name,
-          tenantId: user.tenantId,
-          tenantSlug: user.tenant.slug,
-          role: user.role,
-        }
-      },
-    }),
-  ],
+export function isAuthenticated(): boolean {
+  const cookieStore = cookies()
+  const token = cookieStore.get('bidops-auth')?.value
+  return token === process.env.PORTAL_AUTH_TOKEN
 }
 
-export const getSession = () => getServerSession(authOptions)
+export function requireAuth() {
+  if (!isAuthenticated()) {
+    redirect('/auth')
+  }
+}
+
+// Stub session shape — keeps dashboard/opportunities pages working
+// without NextAuth. Replace with real session in Phase 2.
+export function getStubSession() {
+  return {
+    user: {
+      id:          'owner',
+      email:       'leroy@southernshadetechnologies.com',
+      name:        'Leroy Brown',
+      tenantId:    process.env.DEFAULT_TENANT_ID ?? '',
+      tenantSlug:  'southern-shade',
+      role:        'OWNER',
+    }
+  }
+}
 
 export async function requireSession() {
-  const session = await getSession()
-  if (!session) throw new Error('Unauthorized')
-  return session
+  requireAuth()
+  return getStubSession()
+}
+
+export async function getSession() {
+  if (!isAuthenticated()) return null
+  return getStubSession()
 }
