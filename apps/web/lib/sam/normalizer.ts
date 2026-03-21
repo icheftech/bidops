@@ -33,6 +33,8 @@ const NAICS_TO_DOMAIN: Record<string, string> = {
 // PSC codes that indicate AI/Robotics regardless of NAICS
 const AI_PSC_CODES = new Set(['D399', 'D302', 'R425', 'R408'])
 
+export { normalizeSamOpportunity as normalizeOpportunity }
+
 export function normalizeSamOpportunity(opp: SamOpportunity, tenantId: string) {
   const naicsCode = opp.naicsCode ?? null
   const pscCode = opp.classificationCode ?? null
